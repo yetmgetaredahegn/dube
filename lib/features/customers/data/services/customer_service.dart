@@ -10,10 +10,14 @@ class CustomerService {
     final data = await api.get('/customers/');
     if (data == null) return [];
     if (data is List) {
-      return data.map((e) => Customer.fromJson(Map<String, dynamic>.from(e))).toList();
+      return data
+          .map((e) => Customer.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
     }
     if (data is Map && data['results'] != null) {
-      return (data['results'] as List).map((e) => Customer.fromJson(Map<String, dynamic>.from(e))).toList();
+      return (data['results'] as List)
+          .map((e) => Customer.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
     }
     return [];
   }

@@ -13,7 +13,8 @@ class TransactionModel {
     required this.date,
   });
 
-  factory TransactionModel.fromJson(Map<String, dynamic> json) => TransactionModel(
+  factory TransactionModel.fromJson(Map<String, dynamic> json) =>
+      TransactionModel(
         id: json['id'] as int,
         customerId: json['customer_id'] as int,
         amount: (json['amount'] ?? 0).toDouble(),

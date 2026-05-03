@@ -15,11 +15,13 @@ class ApiService {
     return _processResponse(resp);
   }
 
-  Future<dynamic> post(String path, {Map<String, String>? headers, Object? body}) async {
+  Future<dynamic> post(String path,
+      {Map<String, String>? headers, Object? body}) async {
     final uri = Uri.parse('${ApiConstants.baseUrl}$path');
     final reqHeaders = <String, String>{'Content-Type': 'application/json'};
     if (headers != null) reqHeaders.addAll(headers);
-    final resp = await client.post(uri, headers: reqHeaders, body: body == null ? null : jsonEncode(body));
+    final resp = await client.post(uri,
+        headers: reqHeaders, body: body == null ? null : jsonEncode(body));
     return _processResponse(resp);
   }
 

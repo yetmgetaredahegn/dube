@@ -8,7 +8,8 @@ class CustomerProvider with ChangeNotifier {
   List<Customer> customers = [];
   bool loading = false;
 
-  CustomerProvider({CustomerService? service}) : service = service ?? CustomerService();
+  CustomerProvider({CustomerService? service})
+      : service = service ?? CustomerService();
 
   Future<void> fetchCustomers() async {
     loading = true;
