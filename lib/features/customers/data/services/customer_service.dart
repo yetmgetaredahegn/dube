@@ -1,5 +1,5 @@
 import '../../../shared/services/api_service.dart';
-import '../models/customer_model.dart';
+import '../models/customer.dart';
 
 class CustomerService {
   final ApiService api;

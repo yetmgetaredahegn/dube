@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "511450012191",
+    "project_id": "dube-95226",
+    "storage_bucket": "dube-95226.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:511450012191:android:2ed40f6e273610c811932a",
+        "android_client_info": {
+          "package_name": "com.example.dube"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "511450012191-3oi27ge77bapnlvthvm5dgabkkrlv2rl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBIQArseieMxU0hv3CJEZq8gd0dA3Zrbqs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "511450012191-3oi27ge77bapnlvthvm5dgabkkrlv2rl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

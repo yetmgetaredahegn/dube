@@ -1,6 +1,6 @@
 import 'package:flutter/foundation.dart';
 
-import '../data/models/customer_model.dart';
+import '../data/models/customer.dart';
 import '../data/services/customer_service.dart';
 
 class CustomerProvider with ChangeNotifier {
