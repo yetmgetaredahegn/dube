@@ -1,84 +1,75 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:dube/features/customers/data/models/customer.dart';
 import 'package:dube/features/customers/data/repositories/customer_repository.dart';
-import 'package:dube/shared/providers/app_providers.dart';
 
-class CustomerActionState {
-  final bool    isLoading;
-  final String? error;
-  final bool    success;
-  const CustomerActionState(
-      {this.isLoading = false, this.error, this.success = false});
-  CustomerActionState copyWith(
-          {bool? isLoading, String? error, bool? success}) =>
-      CustomerActionState(
-        isLoading: isLoading ?? this.isLoading,
-        error:     error,
-        success:   success ?? this.success,
-      );
-}
-
-class CustomerNotifier extends StateNotifier<CustomerActionState> {
+class CustomerNotifier extends StateNotifier<AsyncValue<List<Customer>>> {
   final CustomerRepository _repo;
-  final String             _uid;
+  final String shopOwnerId;
 
-  CustomerNotifier(this._repo, this._uid)
-      : super(const CustomerActionState());
+  CustomerNotifier(this._repo, this.shopOwnerId)
+      : super(const AsyncValue.loading()) {
+    if (shopOwnerId.isNotEmpty) _load();
+  }
 
-  Future<bool> addCustomer({
+  Future<void> _load() async {
+    try {
+      final customers = await _repo.fetchCustomers(shopOwnerId);
+      state = AsyncValue.data(customers);
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
+    }
+  }
+
+  Future<void> addCustomer({
     required String name,
     required String phone,
     required double creditLimit,
     String? note,
   }) async {
-    state = state.copyWith(isLoading: true, error: null, success: false);
     try {
       await _repo.addCustomer(
-          uid: _uid, name: name, phone: phone,
-          creditLimit: creditLimit, note: note);
-      state = state.copyWith(isLoading: false, success: true);
-      return true;
-    } catch (e) {
-      state = state.copyWith(
-          isLoading: false, error: 'Failed to add customer. Try again.');
-      return false;
+        uid: shopOwnerId,
+        name: name,
+        phone: phone,
+        creditLimit: creditLimit,
+        note: note,
+      );
+      await _load();
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
     }
   }
 
-  Future<bool> updateCustomer({
+  Future<void> updateCustomer({
     required String customerId,
-    String? name, String? phone, double? creditLimit, String? note,
+    String? name,
+    String? phone,
+    double? creditLimit,
+    String? note,
   }) async {
-    state = state.copyWith(isLoading: true, error: null, success: false);
     try {
       await _repo.updateCustomer(
-          uid: _uid, customerId: customerId,
-          name: name, phone: phone,
-          creditLimit: creditLimit, note: note);
-      state = state.copyWith(isLoading: false, success: true);
-      return true;
-    } catch (e) {
-      state = state.copyWith(isLoading: false, error: 'Failed to update customer.');
-      return false;
+        uid: shopOwnerId,
+        customerId: customerId,
+        name: name,
+        phone: phone,
+        creditLimit: creditLimit,
+        note: note,
+      );
+      await _load();
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
     }
   }
 
-  Future<bool> deleteCustomer(String customerId) async {
-    state = state.copyWith(isLoading: true, error: null);
+  Future<void> deleteCustomer(String customerId) async {
     try {
-      await _repo.deleteCustomer(_uid, customerId);
-      state = state.copyWith(isLoading: false, success: true);
-      return true;
-    } catch (e) {
-      state = state.copyWith(isLoading: false, error: 'Failed to delete customer.');
-      return false;
+      await _repo.deleteCustomer(shopOwnerId, customerId);
+      await _load();
+    } catch (e, st) {
+      state = AsyncValue.error(e, st);
     }
   }
 
-  void reset() => state = const CustomerActionState();
+  Future<void> refresh() => _load();
 }
-
-final customerNotifierProvider =
-    StateNotifierProvider<CustomerNotifier, CustomerActionState>((ref) {
-  final uid = ref.watch(currentUidProvider);
-  return CustomerNotifier(ref.watch(customerRepositoryProvider), uid);
-});

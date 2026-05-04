@@ -5,18 +5,17 @@ import 'package:dube/features/transactions/data/repositories/transaction_reposit
 class TransactionNotifier
     extends StateNotifier<AsyncValue<List<CreditTransaction>>> {
   final TransactionRepository _repo;
-  final String shopOwnerId;
+  final String uid;
   final String customerId;
 
-  TransactionNotifier(this._repo, this.shopOwnerId, this.customerId)
+  TransactionNotifier(this._repo, this.uid, this.customerId)
       : super(const AsyncValue.loading()) {
     _load();
   }
 
   Future<void> _load() async {
     try {
-      final txns =
-          await _repo.getCustomerTransactions(shopOwnerId, customerId);
+      final txns = await _repo.getCustomerTransactions(uid, customerId);
       state = AsyncValue.data(txns);
     } catch (e, st) {
       state = AsyncValue.error(e, st);
@@ -25,7 +24,7 @@ class TransactionNotifier
 
   Future<void> addTransaction(CreditTransaction txn) async {
     try {
-      await _repo.addTransaction(shopOwnerId, txn);
+      await _repo.addTransaction(uid, txn);
       await _load();
     } catch (e, st) {
       state = AsyncValue.error(e, st);

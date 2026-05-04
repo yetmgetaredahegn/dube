@@ -5,53 +5,50 @@ import 'package:dube/features/transactions/data/models/transaction.dart';
 class TransactionRepository {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // Stream of all transactions for a customer
+  // Stream of transactions for a specific customer (real-time)
   Stream<List<CreditTransaction>> watchCustomerTransactions(
-      String shopOwnerId, String customerId) {
+      String uid, String customerId) {
     return _db
-        .collection(FirestorePaths.transactions(shopOwnerId, customerId))
+        .collection(FirestorePaths.transactions(uid))
+        .where('customerId', isEqualTo: customerId)
         .orderBy('createdAt', descending: true)
         .snapshots()
-        .map((s) =>
-            s.docs.map(CreditTransaction.fromFirestore).toList());
+        .map((s) => s.docs.map(CreditTransaction.fromFirestore).toList());
   }
 
-  // Get all transactions for a customer (one-time fetch)
+  // One-time fetch for a specific customer
   Future<List<CreditTransaction>> getCustomerTransactions(
-      String shopOwnerId, String customerId) async {
+      String uid, String customerId) async {
     final s = await _db
-        .collection(FirestorePaths.transactions(shopOwnerId, customerId))
+        .collection(FirestorePaths.transactions(uid))
+        .where('customerId', isEqualTo: customerId)
         .orderBy('createdAt', descending: true)
         .get();
     return s.docs.map(CreditTransaction.fromFirestore).toList();
   }
 
-  // Get all transactions for the shop (for aging report)
-  Future<List<CreditTransaction>> getAllTransactions(String shopOwnerId) async {
+  // All transactions for the shop (for aging/reports)
+  Future<List<CreditTransaction>> getAllTransactions(String uid) async {
     final s = await _db
-        .collectionGroup('transactions')
-        .where('shopOwnerId', isEqualTo: shopOwnerId)
+        .collection(FirestorePaths.transactions(uid))
         .orderBy('createdAt', descending: true)
         .get();
     return s.docs.map(CreditTransaction.fromFirestore).toList();
   }
 
-  // Add a new transaction
-  Future<String> addTransaction(
-      String shopOwnerId, CreditTransaction txn) async {
+  // Add a transaction
+  Future<String> addTransaction(String uid, CreditTransaction txn) async {
     final ref = await _db
-        .collection(
-            FirestorePaths.transactions(shopOwnerId, txn.customerId))
+        .collection(FirestorePaths.transactions(uid))
         .add(txn.toFirestore());
     return ref.id;
   }
 
-  // Get single transaction by ID
+  // Get a single transaction
   Future<CreditTransaction?> getTransaction(
-      String shopOwnerId, String customerId, String txnId) async {
+      String uid, String txnId) async {
     final doc = await _db
-        .collection(FirestorePaths.transactions(shopOwnerId, customerId))
-        .doc(txnId)
+        .doc(FirestorePaths.transaction(uid, txnId))
         .get();
     if (!doc.exists) return null;
     return CreditTransaction.fromFirestore(doc);

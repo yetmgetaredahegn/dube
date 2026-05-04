@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:dube/shared/providers/app_providers.dart';
 
-// ── Route paths ────────────────────────────────────────────────────────────
+// ── Route paths ───────────────────────────────────────────────────────────────
 
 class AppRoutes {
   AppRoutes._();
@@ -21,10 +21,10 @@ class AppRoutes {
   static String addTransactionPath(String id)  => '/customers/$id/transaction';
 }
 
-// ── Router provider ────────────────────────────────────────────────────────
+// ── Router provider ───────────────────────────────────────────────────────────
 
 final routerProvider = Provider<GoRouter>((ref) {
-  final authState = ref.watch(authStateProvider);
+  final authState = ref.watch(authStateProvider); // now defined in app_providers
 
   return GoRouter(
     initialLocation: AppRoutes.dashboard,
