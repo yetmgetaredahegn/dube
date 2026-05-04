@@ -1,223 +1,147 @@
-import 'package:dube/core/constants/firestore_paths.dart';
 import 'package:dube/features/customers/data/models/customer.dart';
+import 'package:dube/features/customers/data/repositories/customer_repository.dart';
 import 'package:dube/features/transactions/data/models/transaction.dart';
 import 'package:dube/features/transactions/data/repositories/transaction_repository.dart';
 
-/// CORE PRINCIPLE: balance = SUM(CREDIT) - SUM(PAYMENT)
-/// It is NEVER stored in Firestore. Always derived from the ledger.
+class AgingBucket {
+  final String label;
+  final List<Customer> customers;
+  final double totalOwed;
+
+  AgingBucket(
+      {required this.label,
+      required this.customers,
+      required this.totalOwed});
+}
+
 class LedgerService {
-  final TransactionRepository _txRepo;
+  final TransactionRepository _txnRepo;
+  final CustomerRepository _customerRepo;
 
-  LedgerService({TransactionRepository? txRepo})
-      : _txRepo = txRepo ?? TransactionRepository();
+  LedgerService(this._txnRepo, this._customerRepo);
 
-  // ── Balance calculation ────────────────────────────────────────────────────
-
-  Future<double> calculateBalance(String uid, String customerId) async {
-    final txns = await _txRepo.fetchCustomerTransactions(uid, customerId);
-    return _compute(txns);
-  }
-
-  double calculateBalanceFromList(List<Transaction> txns) => _compute(txns);
-
-  double _compute(List<Transaction> txns) {
-    double credits = 0, payments = 0;
-    for (final tx in txns) {
-      if (tx.isCredit)  credits  += tx.amount;
-      else              payments += tx.amount;
+  /// Derives balance from transactions — never stored directly
+  double calculateBalance(List<CreditTransaction> transactions) {
+    double balance = 0;
+    for (final txn in transactions) {
+      if (txn.isCredit) {
+        balance += txn.amount;
+      } else {
+        balance -= txn.amount;
+      }
     }
-    return credits - payments;
+    return balance;
   }
 
-  // ── Add credit (enforces limit) ────────────────────────────────────────────
-
-  Future<Transaction> addCredit({
-    required String uid,
-    required Customer customer,
-    required double amount,
-    String note = '',
-  }) async {
-    if (amount <= 0) throw ArgumentError('Amount must be positive');
-
-    final balance    = await calculateBalance(uid, customer.id);
-    final newBalance = balance + amount;
-
-    if (newBalance > customer.creditLimit) {
-      throw CreditLimitException(
-        requested:      amount,
-        currentBalance: balance,
-        limit:          customer.creditLimit,
-        available:      customer.creditLimit - balance,
-      );
-    }
-
-    return _txRepo.addTransaction(
-      uid:        uid,
-      customerId: customer.id,
-      type:       TransactionType.credit,
-      amount:     amount,
-      note:       note,
-    );
-  }
-
-  // ── Record payment ─────────────────────────────────────────────────────────
-
-  Future<Transaction> addPayment({
-    required String uid,
+  /// Add a credit, enforcing the credit limit
+  Future<void> addCredit({
+    required String shopOwnerId,
     required String customerId,
     required double amount,
-    String note = '',
+    String? note,
   }) async {
-    if (amount <= 0) throw ArgumentError('Amount must be positive');
-    return _txRepo.addTransaction(
-      uid:        uid,
+    final customer =
+        await _customerRepo.getCustomer(shopOwnerId, customerId);
+    if (customer == null) throw Exception('Customer not found');
+
+    final txns = await _txnRepo.getCustomerTransactions(
+        shopOwnerId, customerId);
+    final currentBalance = calculateBalance(txns);
+
+    if (currentBalance + amount > customer.creditLimit) {
+      throw Exception(
+          'Credit limit exceeded. Current balance: $currentBalance, Limit: ${customer.creditLimit}');
+    }
+
+    final txn = CreditTransaction(
+      id: '',
       customerId: customerId,
-      type:       TransactionType.payment,
-      amount:     amount,
-      note:       note,
+      shopOwnerId: shopOwnerId,
+      type: TransactionType.credit,
+      amount: amount,
+      note: note,
+      createdAt: DateTime.now(),
     );
+
+    await _txnRepo.addTransaction(shopOwnerId, txn);
   }
 
-  // ── Attach balances to a list of customers ─────────────────────────────────
-  // One batched Firestore read instead of N reads.
+  /// Add a payment
+  Future<void> addPayment({
+    required String shopOwnerId,
+    required String customerId,
+    required double amount,
+    String? note,
+  }) async {
+    final txn = CreditTransaction(
+      id: '',
+      customerId: customerId,
+      shopOwnerId: shopOwnerId,
+      type: TransactionType.payment,
+      amount: amount,
+      note: note,
+      createdAt: DateTime.now(),
+    );
 
-  Future<List<Customer>> attachBalances(
-      String uid, List<Customer> customers) async {
-    if (customers.isEmpty) return customers;
-
-    final allTxns = await _txRepo.fetchAllTransactions(uid);
-
-    final Map<String, List<Transaction>> byCustomer = {};
-    for (final tx in allTxns) {
-      byCustomer.putIfAbsent(tx.customerId, () => []).add(tx);
-    }
-
-    return customers.map((c) {
-      final balance = _compute(byCustomer[c.id] ?? []);
-      return c.withBalance(balance);
-    }).toList();
+    await _txnRepo.addTransaction(shopOwnerId, txn);
   }
 
-  // ── Aging report ───────────────────────────────────────────────────────────
+  /// Aging report: buckets customers by how old their debt is
+  Future<List<AgingBucket>> getAgingReport(String shopOwnerId) async {
+    final customers = await _customerRepo.getCustomers(shopOwnerId);
+    final now = DateTime.now();
 
-  Future<AgingReport> getAgingReport(
-      String uid, List<Customer> customers) async {
-    final allTxns = await _txRepo.fetchAllTransactions(uid);
-    final now     = DateTime.now();
-
-    final Map<String, List<Transaction>> byCustomer = {};
-    for (final tx in allTxns) {
-      byCustomer.putIfAbsent(tx.customerId, () => []).add(tx);
-    }
-
-    double current = 0, days30 = 0, days60 = 0, days90plus = 0;
-    final entries = <CustomerAgingEntry>[];
+    final bucket0to30 = <Customer>[];
+    final bucket31to60 = <Customer>[];
+    final bucket61to90 = <Customer>[];
+    final bucket90plus = <Customer>[];
 
     for (final customer in customers) {
-      final txns   = byCustomer[customer.id] ?? [];
-      final balance = _compute(txns);
+      final txns = await _txnRepo.getCustomerTransactions(
+          shopOwnerId, customer.id);
+      final balance = calculateBalance(txns);
       if (balance <= 0) continue;
 
-      final credits = txns.where((t) => t.isCredit).toList()
-        ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
+      // Find the oldest unpaid credit
+      final credits =
+          txns.where((t) => t.isCredit).toList()
+            ..sort((a, b) => a.createdAt.compareTo(b.createdAt));
 
-      final ageDays = credits.isEmpty
-          ? 0
-          : now.difference(credits.first.createdAt).inDays;
+      if (credits.isEmpty) continue;
+      final oldestCredit = credits.first;
+      final daysDiff = now.difference(oldestCredit.createdAt).inDays;
 
-      if      (ageDays <= 30) current   += balance;
-      else if (ageDays <= 60) days30    += balance;
-      else if (ageDays <= 90) days60    += balance;
-      else                    days90plus += balance;
-
-      entries.add(CustomerAgingEntry(
-        customer: customer.withBalance(balance),
-        ageDays:  ageDays,
-        balance:  balance,
-      ));
+      if (daysDiff <= 30) {
+        bucket0to30.add(customer);
+      } else if (daysDiff <= 60) {
+        bucket31to60.add(customer);
+      } else if (daysDiff <= 90) {
+        bucket61to90.add(customer);
+      } else {
+        bucket90plus.add(customer);
+      }
     }
 
-    entries.sort((a, b) => b.ageDays.compareTo(a.ageDays));
+    double totalFor(List<Customer> list) =>
+        list.fold(0, (sum, c) => sum + (c.currentBalance ?? 0));
 
-    return AgingReport(
-      current:   current,
-      days30:    days30,
-      days60:    days60,
-      days90plus: days90plus,
-      entries:   entries,
-    );
-  }
-}
-
-// ── Exception ──────────────────────────────────────────────────────────────
-
-class CreditLimitException implements Exception {
-  final double requested;
-  final double currentBalance;
-  final double limit;
-  final double available;
-
-  const CreditLimitException({
-    required this.requested,
-    required this.currentBalance,
-    required this.limit,
-    required this.available,
-  });
-
-  String get userMessage =>
-      'Cannot add ETB ${requested.toStringAsFixed(0)}. '
-      'Only ETB ${available.toStringAsFixed(0)} available '
-      '(limit: ETB ${limit.toStringAsFixed(0)}).';
-}
-
-// ── Report models ──────────────────────────────────────────────────────────
-
-class AgingReport {
-  final double current;
-  final double days30;
-  final double days60;
-  final double days90plus;
-  final List<CustomerAgingEntry> entries;
-
-  const AgingReport({
-    required this.current,
-    required this.days30,
-    required this.days60,
-    required this.days90plus,
-    required this.entries,
-  });
-
-  double get totalOutstanding => current + days30 + days60 + days90plus;
-}
-
-class CustomerAgingEntry {
-  final Customer customer;
-  final int      ageDays;
-  final double   balance;
-
-  const CustomerAgingEntry({
-    required this.customer,
-    required this.ageDays,
-    required this.balance,
-  });
-
-  AgingBucket get bucket {
-    if (ageDays <= 30) return AgingBucket.current;
-    if (ageDays <= 60) return AgingBucket.days30;
-    if (ageDays <= 90) return AgingBucket.days60;
-    return AgingBucket.days90plus;
-  }
-}
-
-enum AgingBucket { current, days30, days60, days90plus }
-
-extension AgingBucketLabel on AgingBucket {
-  String get label {
-    switch (this) {
-      case AgingBucket.current:    return '0–30 days';
-      case AgingBucket.days30:     return '31–60 days';
-      case AgingBucket.days60:     return '61–90 days';
-      case AgingBucket.days90plus: return '90+ days';
-    }
+    return [
+      AgingBucket(
+          label: '0–30 days',
+          customers: bucket0to30,
+          totalOwed: totalFor(bucket0to30)),
+      AgingBucket(
+          label: '31–60 days',
+          customers: bucket31to60,
+          totalOwed: totalFor(bucket31to60)),
+      AgingBucket(
+          label: '61–90 days',
+          customers: bucket61to90,
+          totalOwed: totalFor(bucket61to90)),
+      AgingBucket(
+          label: '90+ days',
+          customers: bucket90plus,
+          totalOwed: totalFor(bucket90plus)),
+    ];
   }
 }

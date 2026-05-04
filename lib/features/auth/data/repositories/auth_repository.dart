@@ -1,6 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:dube/core/constants/firestore_paths.dart';
+import 'package:dube/core/utils/firestore_paths.dart';
 import 'package:dube/features/auth/data/models/app_user.dart';
 
 class AuthRepository {
