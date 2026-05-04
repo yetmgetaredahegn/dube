@@ -85,4 +85,5 @@ class DefaultFirebaseOptions {
     authDomain: 'dube-95226.firebaseapp.com',
     storageBucket: 'dube-95226.firebasestorage.app',
   );
+
 }
