@@ -51,7 +51,7 @@ class DubeTheme {
             color: Color(0xFF1A1A2E),
           ),
         ),
-        cardTheme: CardTheme(
+        cardTheme: CardThemeData(
           color: cardBg,
           elevation: 0,
           shape: RoundedRectangleBorder(
