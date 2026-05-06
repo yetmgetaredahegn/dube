@@ -1,54 +1,50 @@
-# Dube App — Architecture & Implementation Notes (v2)
+# Dube — Credit Management for Local Shops & Mini-Markets
 
-Upgraded from the Django-era plan. Firebase replaces the REST backend entirely — real-time sync, auth, and ledger all baked in.
+**Problem:** Local shop owners track customer credit using notebooks, memory, and verbal agreements — leading to disputes, financial loss, and broken trust.
 
-**Stack:** Flutter + Firebase (Firestore + Auth + FCM) + Riverpod + Go Router
+**Solution:** A mobile-first credit ledger that replaces informal tracking with real-time, auditable credit management — built with Flutter + Firebase.
+
+**Stack:** Flutter · Firebase (Firestore + Auth + FCM) · Riverpod · Go Router
 
 ---
 
-## Backend Philosophy (Critical)
+## Core Architectural Principle
 
-The system is a **financial ledger**, not a CRUD app.
+> Balance is **never stored** as a field. It is always **derived**: `sum(credits) − sum(payments)` across all `CreditTransaction` records for a customer. This is the single most important design decision and what separates this project from a basic CRUD app.
 
-- Balance is **never stored** directly as a field
-- Balance is always **derived**: `sum(credits) − sum(payments)` across all CreditTransaction records for a customer
-- `addCredit()` must read current balance, check the credit limit, then write — never write first
-- This is the most important architectural principle and separates this project from everyone else's
+- `addCredit()` reads current balance → checks credit limit → writes only if valid
+- No stale balance fields, no sync bugs, no reconciliation needed
 
 ---
 
 ## High-Level Architecture
 
 ```
-UI (Screens / Widgets)
-        ↓
-State Management (Riverpod — StateNotifierProvider)
-        ↓
-Services (LedgerService — business logic)
-        ↓
-Repositories (CustomerRepository, TransactionRepository, AuthRepository)
-        ↓
-Firebase (Firestore + Auth + FCM)
+┌─────────────────────────────────────────┐
+│           UI (Screens / Widgets)        │
+│         watches Riverpod providers      │
+├─────────────────────────────────────────┤
+│       State (Riverpod StateNotifier)    │
+│     manages loading / error / data      │
+├─────────────────────────────────────────┤
+│         Services (LedgerService)        │
+│     business logic — credit limits,     │
+│     balance derivation, aging buckets   │
+├─────────────────────────────────────────┤
+│        Repositories (Data Layer)        │
+│   AuthRepo · CustomerRepo · TxnRepo    │
+├─────────────────────────────────────────┤
+│     Firebase (Firestore + Auth + FCM)   │
+│  real-time sync · auth · push notifs    │
+└─────────────────────────────────────────┘
 ```
 
-### Key rules
+### Rules
 
-- UI screens only **watch providers** — never call repositories or services directly from a widget
-- All Firestore path strings live in `FirestorePaths` only — no hardcoded strings elsewhere
-- Each feature owns its models, repos, providers, and screens — no cross-feature imports except via `shared/`
-- Your model is `CreditTransaction` (not `Transaction`) to avoid clash with Firestore's own `Transaction` class
-
----
-
-## What Changed from v1 (Django plan)
-
-| Old plan | New plan |
-|---|---|
-| Django REST API | Firebase (Firestore + Auth + FCM) — no server to deploy |
-| Provider + ChangeNotifier | Riverpod StateNotifier — better testability and composability |
-| http / dio for API calls | Firestore SDKs directly via repositories — no HTTP layer |
-| shared_preferences token storage | Firebase Auth session management (automatic token refresh) |
-| Manual routing | Go Router with auth-based redirect logic |
+- UI screens only **watch providers** — never call repositories directly
+- All Firestore path strings live in `FirestorePaths` — no hardcoded strings
+- Each feature owns its models, repos, providers, and screens
+- Model is `CreditTransaction` (avoids clash with Firestore's `Transaction` class)
 
 ---
 
@@ -69,6 +65,8 @@ lib/
     providers/app_providers.dart         ← all Riverpod providers wired together
     widgets/loading_button.dart
     widgets/empty_state.dart
+    widgets/stat_card.dart               ← reusable dashboard stat card
+    widgets/bottom_nav_shell.dart        ← bottom navigation scaffold
   features/
     auth/
       data/models/app_user.dart
@@ -83,28 +81,34 @@ lib/
       presentation/screens/customers_list_screen.dart
       presentation/screens/customer_detail_screen.dart
       presentation/screens/add_customer_screen.dart
+      presentation/screens/edit_customer_screen.dart
       presentation/widgets/customer_card.dart
     transactions/
-      data/models/transaction.dart       ← class CreditTransaction (not Transaction)
+      data/models/transaction.dart       ← class CreditTransaction
       data/repositories/transaction_repository.dart
       services/ledger_service.dart       ← core business logic
       providers/transaction_notifier.dart
       presentation/screens/add_transaction_screen.dart
+      presentation/widgets/transaction_tile.dart
     dashboard/
       presentation/screens/dashboard_screen.dart
     reports/
       presentation/screens/reports_screen.dart
+    notifications/
+      services/notification_service.dart ← FCM + local notifications
+    settings/
+      presentation/screens/settings_screen.dart
 ```
 
 ---
 
 ## Firestore Schema
 
-### Collection layout
+### Collection Layout
 
 ```
 users/{uid}
-  → Shop owner profile: email, shopName, phone, createdAt
+  → email, shopName, phone, createdAt
 
 users/{uid}/customers/{cid}
   → name, phone, creditLimit, note, createdAt
@@ -114,11 +118,11 @@ users/{uid}/transactions/{tid}
   → customerId, shopOwnerId, type (credit|payment), amount, note, createdAt
 ```
 
-### Why flat transactions (not nested under customers)?
+### Why Flat Transactions?
 
-Storing transactions at `users/{uid}/transactions` (flat) allows Firestore queries across all customers at once — useful for the aging report and dashboard totals. Per-customer history uses a `.where('customerId', isEqualTo: cid)` filter.
+Storing transactions at `users/{uid}/transactions` (not nested under customers) allows Firestore queries across all customers at once — critical for the aging report and dashboard totals. Per-customer history uses `.where('customerId', isEqualTo: cid)`.
 
-### Security rules
+### Security Rules
 
 ```
 rules_version = '2';
@@ -139,114 +143,142 @@ service cloud.firestore {
 
 ---
 
-## Layer Details
+## Models
 
-### Models
+**AppUser**
+```dart
+class AppUser {
+  final String uid, email, shopName, phone;
+  final DateTime createdAt;
+}
+```
 
 **Customer**
 ```dart
 class Customer {
-  final String id;
-  final String uid;          // shop owner
-  final String name;
-  final String phone;
+  final String id, uid, name, phone;
   final double creditLimit;
   final String? note;
   final DateTime createdAt;
   final double? balance;     // computed — never stored in Firestore
+  double get utilizationRatio;
+  bool get isOverLimit;
+  bool get isNearLimit;
 }
 ```
 
-**CreditTransaction** (named to avoid clash with Firestore's Transaction class)
+**CreditTransaction**
 ```dart
 enum TransactionType { credit, payment }
 
 class CreditTransaction {
-  final String id;
-  final String customerId;
-  final String shopOwnerId;
+  final String id, customerId, shopOwnerId;
   final TransactionType type;
   final double amount;
   final String? note;
   final DateTime createdAt;
+  bool get isCredit;
+  bool get isPayment;
 }
-```
-
-### LedgerService (core business logic)
-
-```dart
-class LedgerService {
-  // Derives balance — never stored directly
-  double calculateBalance(List<CreditTransaction> transactions) {
-    double balance = 0;
-    for (final txn in transactions) {
-      if (txn.isCredit) balance += txn.amount;
-      else balance -= txn.amount;
-    }
-    return balance;
-  }
-
-  // Enforces credit limit before writing
-  Future<void> addCredit({
-    required String uid,
-    required String customerId,
-    required double amount,
-    String? note,
-  }) async {
-    final customer = await _customerRepo.fetchCustomer(uid, customerId);
-    final txns = await _txnRepo.getCustomerTransactions(uid, customerId);
-    final currentBalance = calculateBalance(txns);
-
-    if (currentBalance + amount > customer.creditLimit) {
-      throw Exception('Credit limit exceeded');
-    }
-    // Only write after validation passes
-    await _txnRepo.addTransaction(uid, CreditTransaction(...));
-  }
-
-  // Aging report — buckets customers by oldest unpaid credit
-  Future<List<AgingBucket>> getAgingReport(String uid) async { ... }
-}
-```
-
-### State management (Riverpod)
-
-```dart
-// Auth state stream — used by router for redirect
-final authStateProvider = StreamProvider<User?>((ref) {
-  return FirebaseAuth.instance.authStateChanges();
-});
-
-// Current uid shortcut
-final currentUidProvider = Provider<String?>((ref) {
-  return ref.watch(authStateProvider).valueOrNull?.uid;
-});
-
-// Customers with derived balances attached (real-time stream)
-final customersWithBalancesProvider = StreamProvider<List<Customer>>((ref) async* { ... });
-
-// Transactions for a specific customer (family provider)
-final transactionNotifierProvider = StateNotifierProvider.family<
-  TransactionNotifier,
-  AsyncValue<List<CreditTransaction>>,
-  ({String uid, String customerId})
->((ref, params) { ... });
 ```
 
 ---
 
-## Screens (MVP)
+## LedgerService — Core Business Logic
 
-| Screen | Route | Key behaviour |
+```dart
+class LedgerService {
+  // Derives balance — never stored directly
+  double calculateBalance(List<CreditTransaction> transactions);
+
+  // Enforces credit limit before writing
+  Future<void> addCredit({uid, customerId, amount, note});
+
+  // Records a payment
+  Future<void> addPayment({uid, customerId, amount, note});
+
+  // Aging report — buckets customers by oldest unpaid credit
+  // Buckets: 0–30, 31–60, 61–90, 90+ days
+  Future<List<AgingBucket>> getAgingReport(String uid);
+}
+```
+
+---
+
+## State Management (Riverpod)
+
+| Provider | Type | Purpose |
+|---|---|---|
+| `authStateProvider` | `StreamProvider<User?>` | Firebase auth state — used by router for redirect |
+| `currentUidProvider` | `Provider<String?>` | Current user uid shortcut |
+| `authNotifierProvider` | `StateNotifierProvider<AuthNotifier, AuthState>` | Login/register/logout actions |
+| `customerNotifierProvider` | `StateNotifierProvider` | CRUD operations on customers |
+| `customersWithBalancesProvider` | `StreamProvider<List<Customer>>` | Real-time customer list with derived balances |
+| `transactionNotifierProvider` | `StateNotifierProvider.family` | Transactions per customer |
+
+---
+
+## Screens & Routes
+
+| Screen | Route | Key Behaviour |
 |---|---|---|
 | Login | `/login` | Firebase Auth email/password. Redirect to dashboard on success. |
-| Register | `/register` | Create account + Firestore user doc. |
-| Dashboard | `/dashboard` | Total credit issued, total paid, outstanding balance, aging summary. |
-| Customers list | `/customers` | Search by name/phone. Balance badge per card (green/amber/red). |
-| Add customer | `/customers/add` | Name, phone, credit limit. Saves via CustomerRepository. |
-| Customer detail | `/customers/:id` | Real-time transaction history stream. Derived balance. Credit limit bar. |
-| Add transaction | `/customers/:id/transaction` | Credit or payment toggle. LedgerService enforces limit before write. |
-| Reports | `/reports` | Aging buckets: 0–30, 31–60, 61–90, 90+ days. Total owed per bucket. |
+| Register | `/register` | Create account + Firestore user doc with shop name. |
+| Dashboard | `/dashboard` | Total credit, total paid, outstanding balance, aging summary, recent activity. |
+| Customers List | `/customers` | Search by name/phone. Balance badge per card (green/amber/red). |
+| Add Customer | `/customers/add` | Name, phone, credit limit, optional note. |
+| Edit Customer | `/customers/:id/edit` | Update customer details and credit limit. |
+| Customer Detail | `/customers/:id` | Real-time transaction history. Derived balance. Credit limit progress bar. |
+| Add Transaction | `/customers/:id/transaction` | Credit or payment toggle. LedgerService enforces limit before write. |
+| Reports | `/reports` | Aging buckets with totals. Payment history chart. Export-ready summaries. |
+| Settings | `/settings` | Shop profile, sign out, app info. |
+
+**Navigation:** Bottom navigation bar with 4 tabs — Dashboard, Customers, Reports, Settings.
+
+---
+
+## Core Features (Mapped to Course Requirements)
+
+### 1. Customer Credit Limit & Transaction Ledger ✓
+- Credit limits per customer, enforced in `LedgerService`
+- Full transaction history (credits + payments) with timestamps and notes
+- Balance always derived, never stored
+
+### 2. Flexible Repayment Tracking ✓
+- Partial payments, full payments, overpayments supported
+- Each transaction is immutable and timestamped
+- Payment history visible in customer detail screen
+
+### 3. Automated Reminders ✓
+- Push notifications via Firebase Cloud Messaging (FCM)
+- Reminders for overdue balances (configurable thresholds)
+- In-app notification indicators
+
+### 4. Shop Owner Interface ✓
+- Full management dashboard with financial overview
+- Customer CRUD with search
+- Transaction entry with credit limit enforcement
+
+### 5. Reporting ✓
+- Outstanding balances per customer
+- Aging analysis (0–30, 31–60, 61–90, 90+ day buckets)
+- Payment history and trends
+- Total credit issued vs. total collected
+
+---
+
+## Innovation & Advanced Features
+
+| Feature | Description |
+|---|---|
+| **Derived Ledger** | Balance computed from transactions — no stored balance, no stale data |
+| **Real-time Sync** | Firestore `.snapshots()` streams — list updates live without polling |
+| **Aging Report** | Professional accounts-receivable-style aging buckets |
+| **Credit Utilization** | Visual progress bars showing how close each customer is to their limit |
+| **Smart Search** | Client-side search by name or phone number |
+| **Premium UI** | Material 3 design with custom theme, color-coded balance badges, smooth animations |
+| **Riverpod** | Production-grade state management (not basic Provider) |
+| **Security** | Firestore rules ensure each shop owner can only access their own data |
 
 ---
 
@@ -264,47 +296,167 @@ final transactionNotifierProvider = StateNotifierProvider.family<
 
 ## SDLC Mapping (Course Requirements)
 
-### Phase 1 — Deep study & interviews
-Interview 2–3 small shop owners. Document 5 real scenarios: extending credit, customer defaulting, month-end reconciliation, partial payment, credit limit hit.
+### Phase 1 — Deep Study & Analysis
+- Interview 2–3 local shop owners who provide informal credit
+- Document real workflows: how credit is extended, tracked, and collected
+- Identify pain points: disputes, forgotten debts, trust breakdowns
+- Document 3–5 real-world scenarios (see below)
+- Map As-Is workflow (current) and To-Be workflow (proposed system)
 
-### Phase 2 — Requirements
-**Functional:** ledger system, auth, customer management, aging reports, credit limit enforcement, transaction history.
-**Non-functional:** real-time sync, offline tolerance, sub-2s load times, data isolation per shop owner.
+### Phase 2 — Requirement Specification
+**Functional:** Auth, customer management, credit ledger, credit limit enforcement, flexible repayment tracking, aging reports, push notifications, search  
+**Non-functional:** Real-time sync, sub-2s load times, data isolation per shop owner, mobile-first responsive UI
 
 ### Phase 3 — Design
-Architecture diagram, Firestore schema, wireframes for all 8 screens, ERD (Customer ↔ CreditTransaction), security rules.
+- System architecture diagram (above)
+- Firestore schema / ERD (Customer ↔ CreditTransaction)
+- UI/UX wireframes for all screens
+- Security rules design
 
 ### Phase 4 — Development
-Build in this order: data layer → providers → screens. Start with auth flow, then customers feature, then transactions and ledger service, then reports. Every screen replaces a `_Placeholder` in `app_router.dart`.
+- Build order: data layer → providers → screens
+- Start with auth, then customers, then transactions/ledger, then reports
 
 ### Phase 5 — Testing
 - Unit test `LedgerService.calculateBalance()` with mixed credit/payment lists
 - Unit test `addCredit()` to verify limit enforcement throws on exceed
-- Integration test: register → add customer → add credit → verify balance derived correctly
-- UAT with a real shop owner
+- Integration test: register → add customer → add credit → verify balance
+- UAT with a real shop owner using the physical device
 
 ---
 
-## What Impresses a Professor
+## Real-World Scenarios (Analysis Deliverable)
 
-1. **Ledger principle** — balance derived from transactions, never stored. Most students store a balance field. You don't.
-2. **Riverpod over Provider** — shows awareness of production-grade state management patterns
-3. **Real-time Firestore streams** — `watchCustomers()` using `.snapshots()` means the list updates live without pulling
-4. **Aging report** — buckets customers into 0–30, 31–60, 61–90, 90+ day buckets. Shows real business logic, not just CRUD
-5. **Credit limit enforcement in service layer** — not in the UI, not in the repository — in LedgerService, where business logic belongs
-6. **Firebase over Django** — justified by deadline and scope: Firebase is a real backend (not a toy), and the professor cares about the mobile app
+| # | Scenario | What Happens Today | How Dube Solves It |
+|---|---|---|---|
+| 1 | **Extending credit** | Owner writes name + amount in a notebook, or just remembers | Transaction logged instantly with timestamp, amount, and note |
+| 2 | **Customer disputes balance** | "I already paid!" — no proof, trust breaks down | Immutable ledger with full history — both sides see the same data |
+| 3 | **Partial payment** | Owner scribbles over old entry, balance unclear | Each payment is a separate record; balance derived accurately |
+| 4 | **Month-end reconciliation** | Owner spends hours flipping through notebook pages | Dashboard shows totals instantly; aging report flags overdue accounts |
+| 5 | **Credit limit exceeded** | Owner gives more credit than intended, faces losses | System enforces limits — blocks credit beyond threshold |
 
 ---
 
-## Implementation Checklist
+## Implementation Phases
 
-- [ ] Resolve Android Gradle build issue
-- [ ] Build Login + Register screens
-- [ ] Build Dashboard screen with real Firestore data
-- [ ] Build Customers list + Add Customer screens
-- [ ] Build Customer detail + Add Transaction screens (ledger in action)
-- [ ] Build Reports screen with aging buckets
-- [ ] Add loading states and empty states to all screens
-- [ ] Add error handling (credit limit exceeded, network errors)
-- [ ] Set up Firestore security rules in Firebase console
-- [ ] Test on physical device (Samsung M127G)
+### Phase A — Foundation (Auth + Navigation Shell)
+**Goal:** App boots, authenticates, and navigates between placeholder screens.
+
+| # | Task | Files |
+|---|---|---|
+| 1 | Build Login screen (email/password form, validation, error display) | `login_screen.dart` |
+| 2 | Build Register screen (email, password, shop name, phone) | `register_screen.dart` |
+| 3 | Wire router to use real screens instead of `_Placeholder` | `app_router.dart` |
+| 4 | Build bottom navigation shell (Dashboard, Customers, Reports, Settings tabs) | `bottom_nav_shell.dart`, `app_router.dart` |
+| 5 | Build Settings screen (shop profile display, sign out button) | `settings_screen.dart` |
+
+**Exit criteria:** User can register, log in, see bottom nav, navigate between tabs, sign out.
+
+---
+
+### Phase B — Customer Management
+**Goal:** Full CRUD for customers with real-time list.
+
+| # | Task | Files |
+|---|---|---|
+| 1 | Build Customers List screen (real-time stream, search bar, balance badges) | `customers_list_screen.dart` |
+| 2 | Build Customer Card widget (name, phone, balance with color coding) | `customer_card.dart` |
+| 3 | Build Add Customer screen (name, phone, credit limit, note) | `add_customer_screen.dart` |
+| 4 | Build Customer Detail screen (profile header, credit limit bar, transaction list) | `customer_detail_screen.dart` |
+| 5 | Build Edit Customer screen (update name, phone, limit) | `edit_customer_screen.dart` |
+| 6 | Build Empty State widget (shown when no customers exist) | `empty_state.dart` |
+
+**Exit criteria:** Owner can add/edit/delete customers, see real-time list with search, see balance badges.
+
+---
+
+### Phase C — Transaction Ledger (Core Feature)
+**Goal:** Credit and payment recording with limit enforcement.
+
+| # | Task | Files |
+|---|---|---|
+| 1 | Build Add Transaction screen (credit/payment toggle, amount, note) | `add_transaction_screen.dart` |
+| 2 | Build Transaction Tile widget (credit = red, payment = green, timestamp, note) | `transaction_tile.dart` |
+| 3 | Integrate LedgerService credit limit check into Add Transaction flow | `ledger_service.dart` |
+| 4 | Show credit limit exceeded error with friendly message | `add_transaction_screen.dart` |
+| 5 | Display real-time transaction history in Customer Detail | `customer_detail_screen.dart` |
+| 6 | Build credit utilization progress bar in Customer Detail | `customer_detail_screen.dart` |
+
+**Exit criteria:** Owner can add credits (with limit check) and payments, see transaction history update in real-time, see balance change.
+
+---
+
+### Phase D — Dashboard & Reports
+**Goal:** Business intelligence — totals, aging, and financial overview.
+
+| # | Task | Files |
+|---|---|---|
+| 1 | Build Dashboard screen — total credit, total paid, outstanding balance | `dashboard_screen.dart` |
+| 2 | Build Stat Card widget (reusable card with icon, label, amount) | `stat_card.dart` |
+| 3 | Add recent activity feed to Dashboard (last 5–10 transactions) | `dashboard_screen.dart` |
+| 4 | Add top debtors list to Dashboard | `dashboard_screen.dart` |
+| 5 | Build Reports screen — aging buckets (0–30, 31–60, 61–90, 90+) | `reports_screen.dart` |
+| 6 | Add per-bucket customer list (expandable) in Reports | `reports_screen.dart` |
+| 7 | Build Loading Button widget (disabled state with spinner) | `loading_button.dart` |
+
+**Exit criteria:** Dashboard shows live financial summary. Reports show aging analysis with per-bucket details.
+
+---
+
+### Phase E — Polish, Notifications & Testing
+**Goal:** Production-quality finish — notifications, error handling, testing, documentation.
+
+| # | Task | Files |
+|---|---|---|
+| 1 | Set up FCM and notification service | `notification_service.dart`, `pubspec.yaml` |
+| 2 | Add loading states to all screens (shimmer or spinner) | All screens |
+| 3 | Add error handling everywhere (network errors, empty states) | All screens |
+| 4 | Add pull-to-refresh on Customers List and Dashboard | `customers_list_screen.dart`, `dashboard_screen.dart` |
+| 5 | Deploy Firestore security rules in Firebase console | Firebase console |
+| 6 | Write unit tests for `LedgerService` | `test/` |
+| 7 | Write integration test: register → add customer → add credit → verify | `test/` |
+| 8 | Test on physical device (Samsung M127G) | — |
+| 9 | Prepare SDLC documentation deliverables | External docs |
+
+**Exit criteria:** App handles all edge cases gracefully, notifications work, tests pass, app runs on physical device.
+
+---
+
+## Current Status
+
+### What's Done (Data Layer)
+- [x] Firebase configured (`firebase_options.dart`)
+- [x] Models: `AppUser`, `Customer`, `CreditTransaction`
+- [x] Repositories: `AuthRepository`, `CustomerRepository`, `TransactionRepository`
+- [x] Service: `LedgerService` (balance derivation, credit limit enforcement, aging report)
+- [x] Providers: All Riverpod providers wired in `app_providers.dart`
+- [x] Router: `GoRouter` with auth redirect logic (using placeholders)
+- [x] Theme: `DubeTheme` with Material 3, brand colors, spacing system
+
+### What's Next (All Screens Are Empty)
+- [ ] **Phase A** — Login, Register, Navigation Shell, Settings
+- [ ] **Phase B** — Customers List, Add/Edit Customer, Customer Detail
+- [ ] **Phase C** — Add Transaction, Transaction Tiles, Limit Enforcement UI
+- [ ] **Phase D** — Dashboard, Reports, Stat Cards
+- [ ] **Phase E** — Notifications, Error Handling, Testing, Documentation
+
+---
+
+## Dependencies
+
+```yaml
+dependencies:
+  flutter: sdk
+  firebase_core: ^3.1.0
+  firebase_auth: ^5.1.0
+  cloud_firestore: ^5.1.0
+  firebase_messaging: ^15.0.3
+  flutter_riverpod: ^2.5.1
+  go_router: ^14.2.0
+  intl: ^0.19.0
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test: sdk
+  flutter_lints: ^4.0.0
+```
