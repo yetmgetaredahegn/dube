@@ -8,6 +8,14 @@ import 'package:dube/features/transactions/data/models/transaction.dart';
 import 'package:dube/features/transactions/data/repositories/transaction_repository.dart';
 import 'package:dube/features/transactions/providers/transaction_notifier.dart';
 import 'package:dube/features/transactions/services/ledger_service.dart';
+import 'package:dube/integrations/notification_service.dart';
+import 'package:dube/integrations/firebase_notification_service.dart';
+
+// ── Shared Services ─────────────────────────────────────────────────────────
+
+final notificationServiceProvider = Provider<NotificationService>((ref) {
+  return FirebaseNotificationService();
+});
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
