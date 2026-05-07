@@ -4,7 +4,8 @@
 
 **Solution:** A mobile-first credit ledger that replaces informal tracking with real-time, auditable credit management — built with Flutter + Firebase.
 
-**Stack:** Flutter · Firebase (Firestore + Auth + FCM) · Riverpod · Go Router
+**Stack:** Flutter · Firebase (Firestore, Auth, FCM) · Riverpod · Go Router  
+**Pluggable integrations:** The architecture is **not rigid** — any layer can be swapped. Auth can use Clerk instead of Firebase Auth. Notifications can use Twilio (SMS), SendGrid (email), or FCM (push). The repository/service pattern means swapping a provider doesn't touch UI code.
 
 ---
 
@@ -34,10 +35,15 @@
 │        Repositories (Data Layer)        │
 │   AuthRepo · CustomerRepo · TxnRepo    │
 ├─────────────────────────────────────────┤
-│     Firebase (Firestore + Auth + FCM)   │
-│  real-time sync · auth · push notifs    │
+│        Integrations (Pluggable)         │
+│  Firebase · Clerk · Twilio · SendGrid  │
+│  swap any backend without touching UI   │
 └─────────────────────────────────────────┘
 ```
+
+### Why Pluggable?
+
+The repository pattern means every external dependency is behind an interface. If Firebase Auth is too limited, swap in Clerk. If FCM doesn't cover SMS, add Twilio. The UI and business logic layers never know or care which provider is behind the repository.
 
 ### Rules
 
@@ -95,9 +101,12 @@ lib/
     reports/
       presentation/screens/reports_screen.dart
     notifications/
-      services/notification_service.dart ← FCM + local notifications
+      services/notification_service.dart ← pluggable: FCM / Twilio / SendGrid
     settings/
       presentation/screens/settings_screen.dart
+  integrations/                            ← third-party service wrappers
+    sms_service.dart                       ← Twilio or any SMS API
+    email_service.dart                     ← SendGrid or any email API
 ```
 
 ---
@@ -250,9 +259,12 @@ class LedgerService {
 - Payment history visible in customer detail screen
 
 ### 3. Automated Reminders ✓
-- Push notifications via Firebase Cloud Messaging (FCM)
+- **Push notifications** via Firebase Cloud Messaging (FCM)
+- **SMS reminders** via Twilio or similar (pluggable — add when needed)
+- **Email reminders** via SendGrid or similar (pluggable — add when needed)
 - Reminders for overdue balances (configurable thresholds)
 - In-app notification indicators
+- The notification layer is behind `NotificationService` — swap providers without touching screens
 
 ### 4. Shop Owner Interface ✓
 - Full management dashboard with financial overview
@@ -279,6 +291,7 @@ class LedgerService {
 | **Premium UI** | Material 3 design with custom theme, color-coded balance badges, smooth animations |
 | **Riverpod** | Production-grade state management (not basic Provider) |
 | **Security** | Firestore rules ensure each shop owner can only access their own data |
+| **Pluggable Integrations** | Auth, SMS, email providers can be swapped without touching UI or business logic |
 
 ---
 
@@ -444,11 +457,12 @@ class LedgerService {
 
 ## Dependencies
 
+### Core (always included)
 ```yaml
 dependencies:
   flutter: sdk
   firebase_core: ^3.1.0
-  firebase_auth: ^5.1.0
+  firebase_auth: ^5.1.0          # can be replaced with Clerk SDK if needed
   cloud_firestore: ^5.1.0
   firebase_messaging: ^15.0.3
   flutter_riverpod: ^2.5.1
@@ -460,3 +474,20 @@ dev_dependencies:
   flutter_test: sdk
   flutter_lints: ^4.0.0
 ```
+
+### Optional (add as needed)
+```yaml
+# Auth alternative
+clerk_flutter: latest       # if Firebase Auth is too limited
+
+# SMS notifications
+http: ^1.2.0                # for calling Twilio REST API
+
+# Email notifications
+http: ^1.2.0                # for calling SendGrid REST API
+
+# Local notifications
+flutter_local_notifications: ^17.0.0
+```
+
+> **Philosophy:** Start with Firebase for everything. When a specific feature is easier with a third-party service, add it. The repository/service layer means nothing else changes.
