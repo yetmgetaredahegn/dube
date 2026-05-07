@@ -5,15 +5,17 @@ import 'package:dube/features/transactions/data/models/transaction.dart';
 class TransactionRepository {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
 
-  // Stream of transactions for a specific customer (real-time)
   Stream<List<CreditTransaction>> watchCustomerTransactions(
       String uid, String customerId) {
     return _db
         .collection(FirestorePaths.transactions(uid))
         .where('customerId', isEqualTo: customerId)
-        .orderBy('createdAt', descending: true)
         .snapshots()
-        .map((s) => s.docs.map(CreditTransaction.fromFirestore).toList());
+        .map((s) {
+          final list = s.docs.map(CreditTransaction.fromFirestore).toList();
+          list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+          return list;
+        });
   }
 
   // One-time fetch for a specific customer
@@ -22,9 +24,10 @@ class TransactionRepository {
     final s = await _db
         .collection(FirestorePaths.transactions(uid))
         .where('customerId', isEqualTo: customerId)
-        .orderBy('createdAt', descending: true)
         .get();
-    return s.docs.map(CreditTransaction.fromFirestore).toList();
+    final list = s.docs.map(CreditTransaction.fromFirestore).toList();
+    list.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return list;
   }
 
   // All transactions for the shop (for aging/reports)
