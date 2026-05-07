@@ -1,7 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:dube/features/auth/data/repositories/auth_repository.dart';
-import 'package:dube/features/auth/providers/auth_notifier.dart';
 import 'package:dube/features/customers/data/models/customer.dart';
 import 'package:dube/features/customers/data/repositories/customer_repository.dart';
 import 'package:dube/features/customers/providers/customer_notifier.dart';
